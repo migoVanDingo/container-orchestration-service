@@ -49,6 +49,7 @@ def _cmd_run(args) -> int:
         "command": args.cmd,
         "env": _kv(args.env),
         "mounts": _mounts(args.mount),
+        "ports": args.publish or [],
         "network": args.network,
         "stdin": args.stdin,
         "timeout_seconds": args.timeout,
@@ -150,6 +151,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--provision", action="append", default=[], help="setup step (repeatable)")
     r.add_argument("--build-context", dest="build_context", help="build a context dir")
     r.add_argument("--mount", action="append", default=[], help="host:container[:ro] (repeatable)")
+    r.add_argument("--publish", action="append", default=[],
+                   help="host:container port (repeatable; implies --network bridge)")
     r.add_argument("--env", action="append", default=[], help="K=V (repeatable)")
     r.add_argument("--network", default="none", choices=["none", "bridge"])
     r.add_argument("--cpus", type=float)

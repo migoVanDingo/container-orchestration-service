@@ -57,3 +57,22 @@ def test_bad_mount_type_rejected():
     with pytest.raises(SpecError):
         WorkloadSpec.from_dict({"image": "alpine",
                                 "mounts": [{"source": "x", "target": "y", "type": "weird"}]})
+
+
+def test_ports_parsed_from_string_and_dict():
+    s = WorkloadSpec.from_dict({
+        "image": "alpine", "network": "bridge",
+        "ports": ["50505:8000", {"host": 9000, "container": 9001, "protocol": "udp"}],
+    })
+    assert (s.ports[0].host, s.ports[0].container, s.ports[0].protocol) == (50505, 8000, "tcp")
+    assert (s.ports[1].host, s.ports[1].container, s.ports[1].protocol) == (9000, 9001, "udp")
+
+
+def test_ports_require_non_none_network():
+    with pytest.raises(SpecError):
+        WorkloadSpec.from_dict({"image": "alpine", "ports": ["50505:8000"]})  # network=none default
+
+
+def test_port_out_of_range_rejected():
+    with pytest.raises(SpecError):
+        WorkloadSpec.from_dict({"image": "alpine", "network": "bridge", "ports": ["70000:8000"]})

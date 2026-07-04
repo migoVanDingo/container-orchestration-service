@@ -166,13 +166,41 @@ class DockerBackend:
         if existing is not None:
             if existing.status != "running":
                 existing.start()
+                self._verify_running(existing, spec.name)
             return Handle(id=existing.id, name=spec.name, status="running")
         image = self.resolve_image(spec.env)
         lbls = L.build(lifecycle="persistent", name=spec.name, owner=spec.owner,
                        purpose=spec.purpose, ttl_seconds=spec.ttl_seconds)
         kwargs = self._create_kwargs(spec, image, lbls)
         container = self.client.containers.run(**{**kwargs, "detach": True})
+        self._verify_running(container, spec.name)
         return Handle(id=container.id, name=spec.name, status="running")
+
+    def _verify_running(self, container: Any, name: str) -> None:
+        """Confirm the container is actually up — catch immediate/short crashes
+        and surface the exit code + logs instead of falsely reporting 'running'."""
+        for delay in (0.0, 1.0):
+            if delay:
+                time.sleep(delay)
+            try:
+                container.reload()
+            except Exception:  # noqa: BLE001
+                break
+            if container.status == "running":
+                if delay:  # survived the second check
+                    return
+                continue  # running on first look; re-check after a beat
+            # not running → it crashed. Capture why, clean up, raise.
+            code = (container.attrs.get("State") or {}).get("ExitCode")
+            logs = _combined_logs(container)
+            try:
+                container.remove(force=True)
+            except Exception:  # noqa: BLE001
+                pass
+            raise BackendError(
+                f"container {name!r} exited immediately (code {code}). "
+                f"logs:\n{logs[:1500]}"
+            )
 
     def exec(self, name: str, command: list[str] | str) -> dict:
         container = self._require(name)
@@ -238,6 +266,11 @@ class DockerBackend:
             "labels": lbls,
             "detach": True,
         }
+        if spec.ports:
+            # Publish to loopback only (sandbox-first): host 127.0.0.1:<host> -> container.
+            kwargs["ports"] = {
+                f"{p.container}/{p.protocol}": ("127.0.0.1", p.host) for p in spec.ports
+            }
         if spec.limits.memory:
             kwargs["mem_limit"] = spec.limits.memory
         if spec.limits.cpus:
@@ -283,6 +316,14 @@ def _put_file(container: Any, path: str, content: str) -> None:
 
 def _hash(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()[:12]
+
+
+def _combined_logs(container: Any) -> str:
+    try:
+        raw = container.logs(stdout=True, stderr=True)
+        return raw.decode("utf-8", "replace") if raw else ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _logs(container: Any, *, stdout: bool, stderr: bool) -> str:

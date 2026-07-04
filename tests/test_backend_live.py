@@ -1,10 +1,12 @@
 """Live backend tests against the real Docker daemon. Skips if unreachable."""
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from cos.core.backend import DockerBackend
-from cos.core.spec import EnvSpec, Limits, WorkloadSpec
+from cos.core.spec import EnvSpec, Limits, PortMap, WorkloadSpec
 
 
 @pytest.fixture(scope="module")
@@ -72,6 +74,52 @@ def test_run_job_limits_accepted(backend):
         limits=Limits(cpus=0.5, memory="128m"),
     ))
     assert res.exit_code == 0
+
+
+def test_persistent_published_port_is_reachable(backend):
+    """The scenario the user hit: a persistent server, published, curl-able."""
+    import urllib.request
+
+    name = "cos-test-web"
+    try:
+        backend.rm(name)
+    except Exception:  # noqa: BLE001
+        pass
+    spec = WorkloadSpec(
+        env=EnvSpec(image="python:3.11-slim"),
+        command=("python", "-m", "http.server", "8000"),
+        lifecycle="persistent",
+        name=name,
+        network="bridge",
+        ports=(PortMap(host=50506, container=8000),),
+    )
+    backend.ensure_env(spec)
+    try:
+        time.sleep(1.0)  # let the server bind
+        with urllib.request.urlopen("http://127.0.0.1:50506/", timeout=5) as r:
+            assert r.status == 200
+    finally:
+        backend.rm(name)
+
+
+def test_ensure_surfaces_immediate_crash(backend):
+    """A container that exits on start must raise with its logs, not report running."""
+    from cos.core.errors import BackendError
+
+    name = "cos-test-crash"
+    try:
+        backend.rm(name)
+    except Exception:  # noqa: BLE001
+        pass
+    spec = WorkloadSpec(
+        env=EnvSpec(image="alpine:3.19"),
+        command=("sh", "-c", "echo boom-msg >&2; exit 3"),
+        lifecycle="persistent",
+        name=name,
+    )
+    with pytest.raises(BackendError) as ei:
+        backend.ensure_env(spec)
+    assert "boom-msg" in str(ei.value) or "code 3" in str(ei.value)
 
 
 def test_persistent_lifecycle(backend):

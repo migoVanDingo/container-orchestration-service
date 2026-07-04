@@ -32,6 +32,20 @@ class Mount:
 
 
 @dataclass(frozen=True)
+class PortMap:
+    container: int              # port inside the container
+    host: int                  # port published on the host (127.0.0.1)
+    protocol: str = "tcp"
+
+    def validate(self) -> None:
+        if self.protocol not in ("tcp", "udp"):
+            raise SpecError(f"port protocol must be tcp|udp, got {self.protocol!r}")
+        for p in (self.container, self.host):
+            if not (1 <= int(p) <= 65535):
+                raise SpecError(f"port out of range: {p}")
+
+
+@dataclass(frozen=True)
 class Limits:
     cpus: float | None = None       # fractional cores, e.g. 1.5
     memory: str | None = None       # docker mem string, e.g. "512m", "2g"
@@ -67,6 +81,7 @@ class WorkloadSpec:
     command: tuple[str, ...] | None = None
     stdin: str | None = None
     mounts: tuple[Mount, ...] = ()
+    ports: tuple[PortMap, ...] = ()
     env_vars: dict = field(default_factory=dict)
     network: str = "none"                 # sandbox-first default
     limits: Limits = field(default_factory=Limits)
@@ -81,8 +96,15 @@ class WorkloadSpec:
         self.env.validate()
         for m in self.mounts:
             m.validate()
+        for p in self.ports:
+            p.validate()
         if self.network not in NETWORKS:
             raise SpecError(f"network must be one of {NETWORKS}, got {self.network!r}")
+        if self.ports and self.network == "none":
+            raise SpecError(
+                "publishing ports requires network='bridge' (network='none' has no "
+                "host connectivity)"
+            )
         if self.lifecycle not in LIFECYCLES:
             raise SpecError(f"lifecycle must be one of {LIFECYCLES}, got {self.lifecycle!r}")
         if self.lifecycle == "persistent" and not self.name:
@@ -104,12 +126,14 @@ class WorkloadSpec:
             )
             for m in (d.get("mounts") or [])
         )
+        ports = tuple(_parse_port(p) for p in (d.get("ports") or []))
         lim = d.get("limits") or {}
         spec = WorkloadSpec(
             env=env,
             command=tuple(cmd) if cmd else None,
             stdin=d.get("stdin"),
             mounts=mounts,
+            ports=ports,
             env_vars={str(k): str(v) for k, v in (d.get("env") or {}).items()},
             network=str(d.get("network", "none")),
             limits=Limits(cpus=lim.get("cpus"), memory=lim.get("memory")),
@@ -122,6 +146,22 @@ class WorkloadSpec:
         )
         spec.validate()
         return spec
+
+
+def _parse_port(p) -> PortMap:
+    """Accept 'host:container'[/proto] strings or {host, container, protocol?} dicts."""
+    if isinstance(p, str):
+        proto = "tcp"
+        if "/" in p:
+            p, proto = p.rsplit("/", 1)
+        parts = p.split(":")
+        if len(parts) != 2:
+            raise SpecError(f"port {p!r} must be 'host:container'")
+        return PortMap(host=int(parts[0]), container=int(parts[1]), protocol=proto)
+    if isinstance(p, dict):
+        return PortMap(host=int(p["host"]), container=int(p["container"]),
+                       protocol=str(p.get("protocol", "tcp")))
+    raise SpecError(f"unrecognized port spec: {p!r}")
 
 
 def _env_from_dict(d: dict) -> EnvSpec:

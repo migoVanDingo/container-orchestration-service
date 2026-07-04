@@ -23,13 +23,13 @@ def _fmt_job(res: JobResult) -> str:
 
 
 def _spec_dict(
-    *, image, base, provision, build_context, command, stdin, env, mounts,
+    *, image, base, provision, build_context, command, stdin, env, mounts, ports,
     network, cpus, memory, timeout_seconds, lifecycle="ephemeral", name=None,
     owner="", ttl_seconds=None,
 ) -> dict:
     d: dict[str, Any] = {
         "command": command, "stdin": stdin, "env": env or {}, "mounts": mounts or [],
-        "network": network, "lifecycle": lifecycle, "owner": owner,
+        "ports": ports or [], "network": network, "lifecycle": lifecycle, "owner": owner,
         "timeout_seconds": timeout_seconds,
     }
     if image:
@@ -65,6 +65,7 @@ def build_server(host: str = "127.0.0.1", port: int = 8770, backend: DockerBacke
         stdin: str | None = None,
         env: dict | None = None,
         mounts: list[dict] | None = None,
+        ports: list[str] | None = None,
         network: str = "none",
         cpus: float | None = None,
         memory: str | None = None,
@@ -75,14 +76,15 @@ def build_server(host: str = "127.0.0.1", port: int = 8770, backend: DockerBacke
         Provide exactly one image source: `image` (pull), `base`+`provision`
         (a base image plus setup commands), or `build_context` (a build dir).
         `command` is a shell string. `mounts` is a list of
-        {source, target, read_only?, type?}. `network` defaults to 'none'
-        (sandboxed). The job auto-removes when it finishes.
+        {source, target, read_only?, type?}. `ports` publishes to the host as
+        "host:container" strings (requires network='bridge'). `network` defaults
+        to 'none' (sandboxed). The job auto-removes when it finishes.
         """
         try:
             spec = WorkloadSpec.from_dict(_spec_dict(
                 image=image, base=base, provision=provision, build_context=build_context,
-                command=command, stdin=stdin, env=env, mounts=mounts, network=network,
-                cpus=cpus, memory=memory, timeout_seconds=timeout_seconds))
+                command=command, stdin=stdin, env=env, mounts=mounts, ports=ports,
+                network=network, cpus=cpus, memory=memory, timeout_seconds=timeout_seconds))
             return _fmt_job(be.run_job(spec))
         except CosError as exc:
             raise ValueError(str(exc)) from exc
@@ -96,20 +98,27 @@ def build_server(host: str = "127.0.0.1", port: int = 8770, backend: DockerBacke
         provision: list[str] | None = None,
         env: dict | None = None,
         mounts: list[dict] | None = None,
-        network: str = "none",
+        ports: list[str] | None = None,
+        network: str = "bridge",
         cpus: float | None = None,
         memory: str | None = None,
     ) -> str:
         """Find-or-create a persistent, named container (a long-lived service).
-        Idempotent: returns the existing one if already present, else starts it."""
+        Idempotent: returns the existing one if present, else starts + verifies it.
+
+        To reach a server from the host, publish `ports` as "host:container"
+        strings (e.g. ["50505:8000"]) — this needs network='bridge' (the default
+        here). Raises with the container's logs if it crashes on start.
+        """
         try:
             spec = WorkloadSpec.from_dict(_spec_dict(
                 image=image, base=base, provision=provision, build_context=None,
-                command=command, stdin=None, env=env, mounts=mounts, network=network,
-                cpus=cpus, memory=memory, timeout_seconds=None,
+                command=command, stdin=None, env=env, mounts=mounts, ports=ports,
+                network=network, cpus=cpus, memory=memory, timeout_seconds=None,
                 lifecycle="persistent", name=name))
             h = be.ensure_env(spec)
-            return f"{h.name}: {h.status} ({h.id[:12]})"
+            pub = f" ports {[f'{p.host}->{p.container}' for p in spec.ports]}" if spec.ports else ""
+            return f"{h.name}: {h.status} ({h.id[:12]}){pub}"
         except CosError as exc:
             raise ValueError(str(exc)) from exc
 
