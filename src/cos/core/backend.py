@@ -19,7 +19,7 @@ from typing import Any
 
 from cos.core import labels as L
 from cos.core.errors import BackendError, NotFoundError, SpecError, TimeoutError_
-from cos.core.spec import EnvSpec, WorkloadSpec
+from cos.core.spec import EnvSpec, WorkloadSpec, is_user_network
 
 _STDIN_PATH = "/tmp/cos_stdin"
 
@@ -120,6 +120,8 @@ class DockerBackend:
     def run_job(self, spec: WorkloadSpec) -> JobResult:
         spec.validate()
         image = self.resolve_image(spec.env)
+        if is_user_network(spec.network):
+            self.ensure_network(spec.network)
         lbls = L.build(lifecycle="ephemeral", owner=spec.owner, purpose=spec.purpose,
                        ttl_seconds=spec.ttl_seconds, name=spec.name)
         kwargs = self._create_kwargs(spec, image, lbls)
@@ -169,6 +171,8 @@ class DockerBackend:
                 self._verify_running(existing, spec.name)
             return Handle(id=existing.id, name=spec.name, status="running")
         image = self.resolve_image(spec.env)
+        if is_user_network(spec.network):
+            self.ensure_network(spec.network)
         lbls = L.build(lifecycle="persistent", name=spec.name, owner=spec.owner,
                        purpose=spec.purpose, ttl_seconds=spec.ttl_seconds)
         kwargs = self._create_kwargs(spec, image, lbls)
@@ -238,6 +242,39 @@ class DockerBackend:
             except Exception:  # noqa: BLE001
                 pass
         return reaped
+
+    # ── networks (inter-container communication) ──────────────────────────────
+
+    def ensure_network(self, name: str) -> str:
+        """Find-or-create a user-defined bridge network. Containers sharing it
+        resolve each other by container name (Docker's embedded DNS)."""
+        existing = self.client.networks.list(names=[name])
+        if existing:
+            return existing[0].id
+        try:
+            net = self.client.networks.create(
+                name, driver="bridge", check_duplicate=True,
+                labels={L.MANAGED: "true"})
+        except Exception as exc:  # noqa: BLE001
+            raise BackendError(f"could not create network {name!r}: {exc}") from exc
+        return net.id
+
+    def remove_network(self, name: str) -> None:
+        nets = self.client.networks.list(names=[name])
+        if not nets:
+            raise NotFoundError(f"no network named {name!r}")
+        try:
+            nets[0].remove()
+        except Exception as exc:  # noqa: BLE001
+            raise BackendError(f"could not remove network {name!r}: {exc}") from exc
+
+    def list_networks(self) -> list[dict]:
+        out = []
+        for n in self.client.networks.list(filters={"label": f"{L.MANAGED}=true"}):
+            n.reload()
+            members = [c.get("Name", "?") for c in (n.attrs.get("Containers") or {}).values()]
+            out.append({"name": n.name, "id": n.id[:12], "containers": members})
+        return out
 
     # ── internals ────────────────────────────────────────────────────────────
 

@@ -26,6 +26,23 @@ into a container. This service is the thing that runs those containers.
   network (**default `none`**) + lifecycle (`ephemeral` | `persistent`).
 - **Jobs** run once, return `{exit_code, stdout, stderr}`, and auto-remove.
 - **Services** are persistent, named, and reconnected by label (find-or-create).
+- **Networks** — put cooperating containers on a user-defined network and they
+  reach each other by name over Docker's embedded DNS. A persistent container
+  named `X` is reachable at hostname `cos-X`. `none` (sandbox) and `bridge`
+  (host-reachable, no inter-container DNS) remain the built-in modes; `host` and
+  `container:*` are rejected.
+
+## Multi-container example
+
+```bash
+cos network create appnet
+cos run python:3.11-slim --network appnet --cmd "python -m http.server 8000"  # (as a service via MCP container_ensure)
+# a second container on appnet reaches the first at http://cos-<name>:8000
+cos network ls
+```
+
+Over MCP: `network_create` / `network_list` / `network_remove`, plus
+`network=<name>` on `container_run` / `container_ensure`.
 
 ## Quick start
 

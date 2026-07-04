@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from cos.core.errors import SpecError
-from cos.core.spec import EnvSpec, Mount, WorkloadSpec
+from cos.core.spec import EnvSpec, Mount, WorkloadSpec, is_user_network
 
 
 def test_env_requires_exactly_one_source():
@@ -51,6 +51,19 @@ def test_persistent_requires_name():
 def test_bad_network_rejected():
     with pytest.raises(SpecError):
         WorkloadSpec.from_dict({"image": "alpine", "network": "host"})
+    with pytest.raises(SpecError):
+        WorkloadSpec.from_dict({"image": "alpine", "network": "container:abc"})
+    with pytest.raises(SpecError):
+        WorkloadSpec.from_dict({"image": "alpine", "network": "bad name!"})
+
+
+def test_user_defined_network_accepted():
+    s = WorkloadSpec.from_dict({"image": "alpine", "network": "cos-mynet"})
+    assert s.network == "cos-mynet"
+    assert is_user_network("cos-mynet")
+    # user network permits publishing ports (unlike 'none')
+    WorkloadSpec.from_dict(
+        {"image": "alpine", "network": "cos-mynet", "ports": ["50505:8000"]})
 
 
 def test_bad_mount_type_rejected():

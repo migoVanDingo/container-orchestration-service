@@ -9,12 +9,23 @@ Exactly one of {image, build, base} is set.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from cos.core.errors import SpecError
 
-NETWORKS = ("none", "bridge")
+# Network modes we allow directly. Any other value is treated as a user-defined
+# network name — containers sharing one resolve each other by container name (DNS).
+RESERVED_NETWORKS = ("none", "bridge")
+# Docker network modes that would break the sandbox (host stack / another
+# container's namespace). Rejected even though they're syntactically valid names.
+FORBIDDEN_NETWORKS = ("host",)
+_NET_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$")
 LIFECYCLES = ("ephemeral", "persistent")
+
+
+def is_user_network(network: str) -> bool:
+    return network not in RESERVED_NETWORKS
 
 
 @dataclass(frozen=True)
@@ -98,12 +109,16 @@ class WorkloadSpec:
             m.validate()
         for p in self.ports:
             p.validate()
-        if self.network not in NETWORKS:
-            raise SpecError(f"network must be one of {NETWORKS}, got {self.network!r}")
+        if self.network in FORBIDDEN_NETWORKS or self.network.startswith("container:"):
+            raise SpecError(f"network mode {self.network!r} is not allowed (breaks the sandbox)")
+        if is_user_network(self.network) and not _NET_NAME.match(self.network):
+            raise SpecError(
+                f"network must be 'none', 'bridge', or a valid network name, got {self.network!r}"
+            )
         if self.ports and self.network == "none":
             raise SpecError(
-                "publishing ports requires network='bridge' (network='none' has no "
-                "host connectivity)"
+                "publishing ports requires 'bridge' or a user-defined network "
+                "('none' has no host connectivity)"
             )
         if self.lifecycle not in LIFECYCLES:
             raise SpecError(f"lifecycle must be one of {LIFECYCLES}, got {self.lifecycle!r}")

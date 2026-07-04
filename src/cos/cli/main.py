@@ -126,6 +126,26 @@ def _cmd_reap(args) -> int:
     return 0
 
 
+def _cmd_network(args) -> int:
+    be = _backend()
+    try:
+        if args.net_action == "create":
+            be.ensure_network(args.name)
+            print(f"network {args.name} ready")
+        elif args.net_action == "rm":
+            be.remove_network(args.name)
+            print(f"removed network {args.name}")
+        else:  # ls
+            nets = be.list_networks()
+            if not nets:
+                print("(no managed networks)")
+            for n in nets:
+                print(f"{n['name']:<20} [{', '.join(n['containers']) or 'empty'}]")
+    except CosError as exc:
+        sys.exit(str(exc))
+    return 0
+
+
 def _cmd_serve(args) -> int:
     try:
         from cos.mcp_server.server import build_server
@@ -184,6 +204,15 @@ def main(argv: list[str] | None = None) -> int:
     rp = sub.add_parser("reap", help="remove ephemeral managed containers")
     rp.add_argument("--all", action="store_true", help="not just expired ones")
     rp.set_defaults(fn=_cmd_reap)
+
+    net = sub.add_parser("network", help="manage user-defined networks")
+    net_sub = net.add_subparsers(dest="net_action", required=True)
+    nc = net_sub.add_parser("create", help="create/find a network")
+    nc.add_argument("name")
+    nr = net_sub.add_parser("rm", help="remove a network")
+    nr.add_argument("name")
+    net_sub.add_parser("ls", help="list managed networks")
+    net.set_defaults(fn=_cmd_network)
 
     sv = sub.add_parser("serve", help="run the MCP server (streamable-HTTP)")
     sv.add_argument("--host", default="127.0.0.1")

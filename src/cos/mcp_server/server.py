@@ -173,4 +173,36 @@ def build_server(host: str = "127.0.0.1", port: int = 8770, backend: DockerBacke
         reaped = be.reap(only_expired=only_expired)
         return f"reaped {len(reaped)}: {', '.join(reaped)}" if reaped else "nothing to reap"
 
+    @mcp.tool()
+    def network_create(name: str) -> str:
+        """Create (or find) a user-defined network so multiple containers can talk.
+
+        Put cooperating containers on the same network (pass `network=<name>` to
+        container_ensure/run). They then reach each other by container name — a
+        persistent container named X is reachable at hostname 'cos-X'.
+        """
+        try:
+            be.ensure_network(name)
+            return f"network {name} ready (reach members at hostname cos-<name>)"
+        except CosError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @mcp.tool()
+    def network_remove(name: str) -> str:
+        """Remove a user-defined network (detach containers first)."""
+        try:
+            be.remove_network(name)
+            return f"removed network {name}"
+        except CosError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @mcp.tool()
+    def network_list() -> str:
+        """List managed user-defined networks and their attached containers."""
+        nets = be.list_networks()
+        if not nets:
+            return "(no managed networks)"
+        return "\n".join(
+            f"{n['name']:<20} [{', '.join(n['containers']) or 'empty'}]" for n in nets)
+
     return mcp

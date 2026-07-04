@@ -122,6 +122,42 @@ def test_ensure_surfaces_immediate_crash(backend):
     assert "boom-msg" in str(ei.value) or "code 3" in str(ei.value)
 
 
+def test_shared_network_inter_container_dns(backend):
+    """Two containers on a user-defined network reach each other by name."""
+    net = "cos-test-net"
+    try:
+        backend.rm("web")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        backend.remove_network(net)
+    except Exception:  # noqa: BLE001
+        pass
+    backend.ensure_network(net)
+    try:
+        backend.ensure_env(WorkloadSpec(
+            env=EnvSpec(image="python:3.11-slim"),
+            command=("python", "-m", "http.server", "8000"),
+            lifecycle="persistent", name="web", network=net,
+        ))
+        time.sleep(1.0)
+        # one-shot client on the same network reaches the server by DNS name cos-web
+        res = backend.run_job(WorkloadSpec(
+            env=EnvSpec(image="alpine:3.19"),
+            command=("wget", "-qO-", "http://cos-web:8000/"),
+            network=net,
+        ))
+        assert res.exit_code == 0
+        assert "Directory listing" in res.stdout or "<html" in res.stdout.lower()
+        assert net in [n["name"] for n in backend.list_networks()]
+    finally:
+        try:
+            backend.rm("web")
+        except Exception:  # noqa: BLE001
+            pass
+        backend.remove_network(net)
+
+
 def test_persistent_lifecycle(backend):
     name = "cos-test-persist"
     # clean any leftover

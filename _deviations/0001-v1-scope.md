@@ -57,6 +57,30 @@ still the default (we never set `privileged`).
   than falsely reporting "running". (Bonus: the agent now sees a bad command's
   error instead of a phantom running server.)
 
+## D6 — User-defined networks for inter-container communication (added post-live)
+
+0024 modeled a single container's `network` mode (`none`/`bridge`). Real use —
+"I need a few containers that talk to each other" — needs Docker's embedded DNS,
+which only works on **user-defined** networks, not the default `bridge`.
+
+**Built:**
+- `WorkloadSpec.network` now accepts an arbitrary network **name** in addition to
+  `none`/`bridge`. Anything else is treated as a user network (`is_user_network`),
+  validated against a name regex. `host` and `container:*` are **rejected** as
+  sandbox escapes.
+- `DockerBackend.ensure_network` / `remove_network` / `list_networks` — find-or-
+  create labeled (`cos.managed=true`) bridge networks. `run_job`/`ensure_env`
+  auto-create the network when the spec names one, so callers don't pre-declare.
+- Members resolve each other by container name; a persistent container named `X`
+  is reachable at `cos-X` (our naming prefix). Verified by a live test: a
+  `http.server` service + an alpine client doing `wget http://cos-web:8000/`.
+- Surfaced as MCP tools `network_create` / `network_remove` / `network_list` and
+  CLI `cos network create|rm|ls`, plus `network=<name>` on run/ensure.
+
+**Why:** unblocks multi-container topologies (the container sub-agent's job)
+without pulling in Compose/k8s. Single user-defined bridge per app is enough for
+v1; multi-network attach and aliases are deferred.
+
 ## D4 — Labels-as-state (as designed), no reaper daemon yet
 
 State lives entirely in container labels (`cos.managed`, `cos.lifecycle`,
