@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "container-orchestration-service"
+version = "0.1.0"
+description = "A small, harness-agnostic Docker control plane. Runs workloads (one-shot jobs + persistent services) with an MCP server front end."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "migo" }]
+keywords = ["docker", "orchestration", "mcp", "containers", "sandbox"]
+
+dependencies = [
+  "docker>=7",
+]
+
+[project.optional-dependencies]
+# The MCP server front end. Optional so the core library / CLI can be used
+# without pulling the MCP SDK (and its HTTP server stack).
+mcp = [
+  "mcp>=1.2",
+]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.5",
+  "mcp>=1.2",
+]
+
+[project.scripts]
+cos = "cos.cli.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cos"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
