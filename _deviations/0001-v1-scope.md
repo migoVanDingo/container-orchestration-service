@@ -43,6 +43,20 @@ capabilities and read-only rootfs are **not** forced in v1 — they break many
 stock images, so they'll be an opt-in `hardened` mode later. Non-privileged is
 still the default (we never set `privileged`).
 
+## D5 — Port publishing + verify-on-start (added after live testing)
+
+0024 listed mounts but not published ports, and `ensure_env` originally reported
+"running" optimistically. Live use (run a webserver, curl it) exposed both gaps:
+
+- **Port publishing** — `WorkloadSpec.ports` (`PortMap`) maps container ports to
+  **127.0.0.1** host ports (loopback-only, sandbox-first); requires
+  `network='bridge'`. Surfaced in `container_run`/`container_ensure` (`ports`
+  as `"host:container"` strings) and `cos run --publish`.
+- **Verify-on-start** — `ensure_env` now reloads and confirms the container
+  stayed up; on an immediate crash it raises with the **exit code + logs** rather
+  than falsely reporting "running". (Bonus: the agent now sees a bad command's
+  error instead of a phantom running server.)
+
 ## D4 — Labels-as-state (as designed), no reaper daemon yet
 
 State lives entirely in container labels (`cos.managed`, `cos.lifecycle`,
