@@ -18,7 +18,7 @@ src/cos/
   mcp_server/
     server.py    FastMCP server: container_run/ensure/exec/logs/stop/rm/list/reap
   cli/
-    main.py      `cos ping|run|ps|logs|exec|stop|rm|reap|serve`
+    main.py      `cos ping|run|ps|logs|exec|stop|rm|reap|network|image|gc|serve`
 tests/
   test_spec.py            unit (no docker)
   test_backend_live.py    live vs the daemon (skips if unreachable)
@@ -37,6 +37,13 @@ tests/
 - **ensure_network / remove_network / list_networks** — user-defined bridge
   networks (labeled `cos.managed=true`) for inter-container DNS. `run_job` /
   `ensure_env` auto-create the network when `spec.network` isn't `none`/`bridge`.
+- **build_image / remove_image / list_images** — build-once-run-many. Named,
+  `cos.managed`-labeled images (docker-py `build(labels=...)`); reference by tag
+  from many containers. Kills the "docker build in bash" escape.
+- **prune_containers / prune_networks / prune_images / gc** — GC. `gc` = stopped
+  containers + empty networks + unused images, in that order (containers free
+  the refs first). Never removes running containers. Internal builds
+  (`cos-gen:*`, `cos-build:*`) are now labeled managed so they're reclaimable.
 
 ## Non-obvious decisions
 

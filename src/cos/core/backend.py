@@ -95,7 +95,8 @@ class DockerBackend:
     def _build_context(self, context: str, dockerfile: str | None) -> str:
         tag = "cos-build:" + _hash(context + (dockerfile or ""))
         try:
-            self.client.images.build(path=context, dockerfile=dockerfile, tag=tag, rm=True)
+            self.client.images.build(path=context, dockerfile=dockerfile, tag=tag, rm=True,
+                                     labels={L.MANAGED: "true"})
         except Exception as exc:  # noqa: BLE001
             raise BackendError(f"build failed for context {context!r}: {exc}") from exc
         return tag
@@ -110,7 +111,8 @@ class DockerBackend:
         except Exception:  # noqa: BLE001 — build it
             pass
         try:
-            self.client.images.build(fileobj=io.BytesIO(dockerfile.encode()), tag=tag, rm=True)
+            self.client.images.build(fileobj=io.BytesIO(dockerfile.encode()), tag=tag, rm=True,
+                                     labels={L.MANAGED: "true"})
         except Exception as exc:  # noqa: BLE001
             raise BackendError(f"base+provision build failed: {exc}") from exc
         return tag
@@ -275,6 +277,124 @@ class DockerBackend:
             members = [c.get("Name", "?") for c in (n.attrs.get("Containers") or {}).values()]
             out.append({"name": n.name, "id": n.id[:12], "containers": members})
         return out
+
+    # ── images (build-once, run-many) ─────────────────────────────────────────
+
+    def build_image(
+        self, tag: str, *, context: str | None = None, dockerfile: str | None = None,
+        dockerfile_inline: str | None = None, base: str | None = None,
+        provision: tuple[str, ...] = (), owner: str = "",
+    ) -> dict:
+        """Build a named, reusable image labeled cos.managed.
+
+        The build-once-run-many primitive: build a tagged image, then reference
+        it from many container_run/ensure calls (`image=<tag>`). Exactly one
+        source: `context` (a build dir), `dockerfile_inline` (a Dockerfile
+        string), or `base`+`provision` (FROM base; RUN steps). Labeling makes
+        the image visible to list_images and reclaimable by gc.
+        """
+        sources = [context is not None, dockerfile_inline is not None, base is not None]
+        if sum(sources) != 1:
+            raise SpecError(
+                "build_image needs exactly one of: context, dockerfile_inline, base(+provision)")
+        labels = {L.MANAGED: "true", L.NAME: tag, L.OWNER: owner,
+                  L.CREATED: str(int(time.time()))}
+        try:
+            if context is not None:
+                img, _ = self.client.images.build(
+                    path=context, dockerfile=dockerfile, tag=tag, rm=True, labels=labels)
+            else:
+                if base is not None:
+                    df = "\n".join([f"FROM {base}"] + [f"RUN {s}" for s in provision]) + "\n"
+                else:
+                    df = dockerfile_inline
+                img, _ = self.client.images.build(
+                    fileobj=io.BytesIO(df.encode()), tag=tag, rm=True, labels=labels)
+        except Exception as exc:  # noqa: BLE001
+            raise BackendError(f"build_image {tag!r} failed: {exc}") from exc
+        return {"tag": tag, "id": img.id[:19], "size_mb": round(img.attrs.get("Size", 0) / 1e6, 1)}
+
+    def remove_image(self, tag: str, force: bool = False) -> None:
+        try:
+            self.client.images.get(tag)
+        except Exception:  # noqa: BLE001
+            raise NotFoundError(f"no image named {tag!r}")
+        try:
+            self.client.images.remove(tag, force=force)
+        except Exception as exc:  # noqa: BLE001
+            raise BackendError(f"could not remove image {tag!r}: {exc}") from exc
+
+    def list_images(self) -> list[dict]:
+        out = []
+        for img in self.client.images.list(filters={"label": f"{L.MANAGED}=true"}):
+            out.append({"tags": img.tags or ["<none>"], "id": img.id[:19],
+                        "size_mb": round(img.attrs.get("Size", 0) / 1e6, 1)})
+        return out
+
+    # ── garbage collection ────────────────────────────────────────────────────
+
+    def prune_containers(self) -> list[str]:
+        """Remove STOPPED managed containers (any lifecycle). Leaves running ones."""
+        removed = []
+        for c in self.client.containers.list(all=True, filters=L.managed_filter()):
+            if c.status in ("running", "restarting", "paused"):
+                continue
+            try:
+                c.remove(force=True)
+                removed.append(c.name)
+            except Exception:  # noqa: BLE001
+                pass
+        return removed
+
+    def prune_networks(self) -> list[str]:
+        """Remove managed networks with no attached containers."""
+        removed = []
+        for n in self.client.networks.list(filters={"label": f"{L.MANAGED}=true"}):
+            n.reload()
+            if n.attrs.get("Containers"):
+                continue
+            try:
+                n.remove()
+                removed.append(n.name)
+            except Exception:  # noqa: BLE001
+                pass
+        return removed
+
+    def prune_images(self, only_unused: bool = True) -> list[str]:
+        """Remove managed images (and our cos-gen/cos-build cache tags) not
+        backing any container."""
+        in_use = set()
+        if only_unused:
+            for c in self.client.containers.list(all=True):
+                iid = (c.attrs.get("Image") or "")
+                if iid:
+                    in_use.add(iid)
+        candidates: dict[str, Any] = {}
+        for img in self.client.images.list(filters={"label": f"{L.MANAGED}=true"}):
+            candidates[img.id] = img
+        # backward-compat: our synthetic cache tags, even if built unlabeled.
+        for img in self.client.images.list():
+            if any(t.startswith(("cos-gen:", "cos-build:")) for t in (img.tags or [])):
+                candidates[img.id] = img
+        removed = []
+        for iid, img in candidates.items():
+            if only_unused and iid in in_use:
+                continue
+            label = (img.tags or [iid[:19]])[0]
+            try:
+                self.client.images.remove(img.id, force=True)
+                removed.append(label)
+            except Exception:  # noqa: BLE001 — shared layer / concurrent use
+                pass
+        return removed
+
+    def gc(self) -> dict:
+        """Reclaim managed cruft: stopped containers, empty networks, unused
+        images. Order matters — containers free image + network references."""
+        containers = self.prune_containers()
+        networks = self.prune_networks()
+        images = self.prune_images(only_unused=True)
+        return {"containers": containers, "networks": networks, "images": images}
 
     # ── internals ────────────────────────────────────────────────────────────
 

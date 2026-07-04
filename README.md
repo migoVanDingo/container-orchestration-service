@@ -31,6 +31,14 @@ into a container. This service is the thing that runs those containers.
   named `X` is reachable at hostname `cos-X`. `none` (sandbox) and `bridge`
   (host-reachable, no inter-container DNS) remain the built-in modes; `host` and
   `container:*` are rejected.
+- **Images** — `build_image` builds a named, `cos.managed`-labeled image ONCE
+  (from a context dir, an inline Dockerfile, or base+provision); reference it
+  from many containers via `image=<tag>` (build-once, run-many). `image_list` /
+  `image_remove` manage them.
+- **GC** — `gc` reclaims managed cruft: stopped containers, empty networks, and
+  images not backing any container. Never touches running containers or
+  unmanaged resources. All builds (including the base+provision cache) are
+  labeled managed, so nothing accumulates unreclaimably.
 
 ## Multi-container example
 
@@ -43,6 +51,17 @@ cos network ls
 
 Over MCP: `network_create` / `network_list` / `network_remove`, plus
 `network=<name>` on `container_run` / `container_ensure`.
+
+## Build once, run many + clean up
+
+```bash
+cos image build myapp:latest --context ./myapp   # build + label the image once
+cos run myapp:latest --cmd "..."                 # reference it by tag, N times
+cos image ls
+cos gc                                           # reclaim stopped/empty/unused
+```
+
+Over MCP: `image_build` / `image_list` / `image_remove` and `gc`.
 
 ## Quick start
 

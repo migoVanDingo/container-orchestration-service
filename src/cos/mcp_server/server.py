@@ -205,4 +205,60 @@ def build_server(host: str = "127.0.0.1", port: int = 8770, backend: DockerBacke
         return "\n".join(
             f"{n['name']:<20} [{', '.join(n['containers']) or 'empty'}]" for n in nets)
 
+    @mcp.tool()
+    def image_build(
+        tag: str,
+        context: str | None = None,
+        dockerfile: str | None = None,
+        dockerfile_inline: str | None = None,
+        base: str | None = None,
+        provision: list[str] | None = None,
+    ) -> str:
+        """Build a named, reusable image once — then run it many times.
+
+        Prefer this over `docker build` in a shell: the image is labeled and
+        managed, so `gc` can reclaim it later. Give exactly one source:
+        `context` (a build dir, optional `dockerfile`), `dockerfile_inline`
+        (a full Dockerfile as a string), or `base`+`provision` (FROM base; RUN
+        steps). Then start containers with container_run/ensure `image=<tag>`
+        instead of rebuilding per container.
+        """
+        try:
+            info = be.build_image(
+                tag, context=context, dockerfile=dockerfile,
+                dockerfile_inline=dockerfile_inline, base=base,
+                provision=tuple(provision or ()))
+            return f"built {info['tag']} ({info['id']}, {info['size_mb']}MB)"
+        except CosError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @mcp.tool()
+    def image_remove(tag: str, force: bool = False) -> str:
+        """Remove a managed image by tag. Prefer this over `docker rmi`."""
+        try:
+            be.remove_image(tag, force=force)
+            return f"removed image {tag}"
+        except CosError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @mcp.tool()
+    def image_list() -> str:
+        """List managed images (built via image_build or base+provision)."""
+        imgs = be.list_images()
+        if not imgs:
+            return "(no managed images)"
+        return "\n".join(f"{', '.join(i['tags']):<40} {i['size_mb']}MB" for i in imgs)
+
+    @mcp.tool()
+    def gc() -> str:
+        """Reclaim managed cruft: stopped containers, empty networks, and images
+        not backing any container. Safe — never touches running containers or
+        unmanaged resources. Run after tearing a workload down."""
+        r = be.gc()
+        parts = []
+        for kind in ("containers", "networks", "images"):
+            if r[kind]:
+                parts.append(f"{kind}: {', '.join(r[kind])}")
+        return "reclaimed → " + ("; ".join(parts) if parts else "nothing to reclaim")
+
     return mcp

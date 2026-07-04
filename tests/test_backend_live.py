@@ -158,6 +158,64 @@ def test_shared_network_inter_container_dns(backend):
         backend.remove_network(net)
 
 
+def test_build_image_once_run_many(backend):
+    """build_image → a managed, reusable tag runnable by many containers."""
+    tag = "cos-test-img:latest"
+    try:
+        backend.remove_image(tag, force=True)
+    except Exception:  # noqa: BLE001
+        pass
+    info = backend.build_image(
+        tag, dockerfile_inline="FROM alpine:3.19\nRUN echo built-once > /marker\n")
+    assert info["tag"] == tag
+    try:
+        # the tag is managed + listed
+        assert any(tag in i["tags"] for i in backend.list_images())
+        # run two jobs off the same tag
+        for _ in range(2):
+            res = backend.run_job(WorkloadSpec(
+                env=EnvSpec(image=tag), command=("cat", "/marker")))
+            assert res.exit_code == 0 and "built-once" in res.stdout
+    finally:
+        backend.remove_image(tag, force=True)
+    assert not any(tag in i["tags"] for i in backend.list_images())
+
+
+def test_gc_reclaims_stopped_network_and_unused_image(backend):
+    net = "cos-test-gc-net"
+    img = "cos-test-gc-img:latest"
+    stopped, running = "cos-test-gc-stopped", "cos-test-gc-running"
+    for n in (stopped, running):
+        try:
+            backend.rm(n)
+        except Exception:  # noqa: BLE001
+            pass
+    backend.ensure_network(net)                       # empty managed network
+    backend.build_image(img, dockerfile_inline="FROM alpine:3.19\n")  # unused managed image
+    backend.ensure_env(WorkloadSpec(env=EnvSpec(image="alpine:3.19"),
+                       command=("sleep", "120"), lifecycle="persistent", name=stopped))
+    backend.stop(stopped)                             # stopped managed container
+    backend.ensure_env(WorkloadSpec(env=EnvSpec(image="alpine:3.19"),
+                       command=("sleep", "120"), lifecycle="persistent", name=running))
+    try:
+        r = backend.gc()
+        assert f"cos-{stopped}" in r["containers"]     # prune returns docker names
+        assert net in r["networks"]
+        assert any(img in x for x in r["images"])
+        # the RUNNING container must survive gc (list() returns logical names)
+        assert running in [c.name for c in backend.list()]
+    finally:
+        for n in (stopped, running):
+            try:
+                backend.rm(n)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            backend.remove_image(img, force=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def test_persistent_lifecycle(backend):
     name = "cos-test-persist"
     # clean any leftover

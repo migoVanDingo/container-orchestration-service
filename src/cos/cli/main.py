@@ -146,6 +146,40 @@ def _cmd_network(args) -> int:
     return 0
 
 
+def _cmd_image(args) -> int:
+    be = _backend()
+    try:
+        if args.img_action == "build":
+            info = be.build_image(
+                args.tag, context=args.context, dockerfile=args.dockerfile,
+                base=args.base, provision=tuple(args.provision or ()))
+            print(f"built {info['tag']} ({info['id']}, {info['size_mb']}MB)")
+        elif args.img_action == "rm":
+            be.remove_image(args.tag, force=args.force)
+            print(f"removed image {args.tag}")
+        else:  # ls
+            imgs = be.list_images()
+            if not imgs:
+                print("(no managed images)")
+            for i in imgs:
+                print(f"{', '.join(i['tags']):<40} {i['size_mb']}MB")
+    except CosError as exc:
+        sys.exit(str(exc))
+    return 0
+
+
+def _cmd_gc(args) -> int:
+    r = _backend().gc()
+    total = sum(len(v) for v in r.values())
+    if not total:
+        print("nothing to reclaim")
+        return 0
+    for kind in ("containers", "networks", "images"):
+        if r[kind]:
+            print(f"{kind}: {', '.join(r[kind])}")
+    return 0
+
+
 def _cmd_serve(args) -> int:
     try:
         from cos.mcp_server.server import build_server
@@ -213,6 +247,23 @@ def main(argv: list[str] | None = None) -> int:
     nr.add_argument("name")
     net_sub.add_parser("ls", help="list managed networks")
     net.set_defaults(fn=_cmd_network)
+
+    img = sub.add_parser("image", help="build-once / manage reusable images")
+    img_sub = img.add_subparsers(dest="img_action", required=True)
+    ib = img_sub.add_parser("build", help="build a named managed image")
+    ib.add_argument("tag")
+    ib.add_argument("--context", help="build context dir")
+    ib.add_argument("--dockerfile", help="dockerfile path relative to context")
+    ib.add_argument("--base", help="base image for base+provision")
+    ib.add_argument("--provision", action="append", default=[], help="setup step (repeatable)")
+    ir = img_sub.add_parser("rm", help="remove a managed image")
+    ir.add_argument("tag")
+    ir.add_argument("--force", action="store_true")
+    img_sub.add_parser("ls", help="list managed images")
+    img.set_defaults(fn=_cmd_image)
+
+    sub.add_parser("gc", help="reclaim stopped containers, empty networks, unused images"
+                   ).set_defaults(fn=_cmd_gc)
 
     sv = sub.add_parser("serve", help="run the MCP server (streamable-HTTP)")
     sv.add_argument("--host", default="127.0.0.1")

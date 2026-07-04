@@ -81,6 +81,31 @@ which only works on **user-defined** networks, not the default `bridge`.
 without pulling in Compose/k8s. Single user-defined bridge per app is enough for
 v1; multi-network attach and aliases are deferred.
 
+## D7 — Image lifecycle + GC (added post-live)
+
+Live use surfaced two gaps 0024 didn't model: no way to **build a named image
+once and run it N times** (the sub-agent built a shared image via raw
+`docker build` in a shell, escaping the managed model), and **no garbage
+collection** (custom images, the base+provision cache, and empty networks
+accumulated with nothing to reclaim them).
+
+**Built:**
+- `build_image(tag, context|dockerfile_inline|base+provision)` — builds a
+  `cos.managed`-labeled image (docker-py `build(labels=...)`), reusable by tag
+  across many `container_run/ensure` calls. `remove_image` / `list_images`.
+- The existing per-workload builds (`cos-gen:*`, `cos-build:*`) are now labeled
+  managed too, so the cache is reclaimable.
+- `gc()` = `prune_containers` (stopped only, never running) + `prune_networks`
+  (empty only) + `prune_images` (managed + our cache tags not backing any
+  container), in that order so containers free image/network refs first.
+- Surfaced as MCP tools `image_build`/`image_remove`/`image_list`/`gc` and CLI
+  `cos image build|rm|ls` + `cos gc`.
+
+**Why:** closes the "docker build/rmi in bash" escape (the owning sub-agent now
+has first-class tools, so raw `docker` in the shell can be blocked) and keeps the
+host from filling with orphaned images. `prune_images` also sweeps unlabeled
+legacy `cos-gen:*`/`cos-build:*` tags for backward compat.
+
 ## D4 — Labels-as-state (as designed), no reaper daemon yet
 
 State lives entirely in container labels (`cos.managed`, `cos.lifecycle`,
