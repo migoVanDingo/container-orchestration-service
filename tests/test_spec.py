@@ -67,6 +67,15 @@ def test_forbidden_bind_mounts_rejected():
                 "mounts": [{"source": src, "target": "/x"}]})
 
 
+def test_forbidden_host_path_covers_build_contexts():
+    # M6: the same check guards build contexts (don't tar the host)
+    from cos.core.spec import is_forbidden_host_path
+    assert is_forbidden_host_path("/")
+    assert is_forbidden_host_path("/etc")
+    assert is_forbidden_host_path("/var/run/docker.sock")
+    assert not is_forbidden_host_path("/tmp/my-project")
+
+
 def test_ordinary_bind_and_volume_mounts_allowed():
     # a project path and a named volume are fine
     WorkloadSpec.from_dict({"image": "alpine",

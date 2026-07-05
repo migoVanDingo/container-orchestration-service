@@ -19,7 +19,7 @@ from typing import Any
 
 from cos.core import labels as L
 from cos.core.errors import BackendError, NotFoundError, SpecError, TimeoutError_
-from cos.core.spec import EnvSpec, WorkloadSpec, is_user_network
+from cos.core.spec import EnvSpec, WorkloadSpec, is_forbidden_host_path, is_user_network
 
 _STDIN_PATH = "/tmp/cos_stdin"
 
@@ -101,6 +101,9 @@ class DockerBackend:
         return image
 
     def _build_context(self, context: str, dockerfile: str | None) -> str:
+        if is_forbidden_host_path(context):
+            raise SpecError(f"build context {context!r} is a host-sensitive path "
+                            f"(would tar the host); use a specific project dir")
         tag = "cos-build:" + _hash(context + (dockerfile or ""))
         try:
             self.client.images.build(path=context, dockerfile=dockerfile, tag=tag, rm=True,
@@ -305,6 +308,9 @@ class DockerBackend:
         if sum(sources) != 1:
             raise SpecError(
                 "build_image needs exactly one of: context, dockerfile_inline, base(+provision)")
+        if context is not None and is_forbidden_host_path(context):
+            raise SpecError(f"build context {context!r} is a host-sensitive path "
+                            f"(would tar the host); use a specific project dir")
         labels = {L.MANAGED: "true", L.NAME: tag, L.OWNER: owner,
                   L.CREATED: str(int(time.time()))}
         try:

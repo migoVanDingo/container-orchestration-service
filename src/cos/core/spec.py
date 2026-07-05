@@ -26,7 +26,10 @@ _FORBIDDEN_BIND_SET = frozenset(
     {p for p in _FORBIDDEN_BIND_PREFIXES} | {os.path.realpath(p) for p in _FORBIDDEN_BIND_PREFIXES})
 
 
-def _is_forbidden_bind(source: str) -> bool:
+def is_forbidden_host_path(source: str) -> bool:
+    """True if `source` resolves into a host-sensitive path (docker.sock, /,
+    /proc, /sys, /dev, /etc, /var/run, …). Used for both bind-mount sources and
+    build-context dirs — neither should touch these."""
     # Check both the lexically-normalized path (catches literal /etc/... even
     # where /etc is a symlink) and the fully-resolved path (catches `..` and
     # symlink tricks pointing INTO a sensitive dir).
@@ -66,7 +69,7 @@ class Mount:
             raise SpecError(f"mount.type must be bind|volume, got {self.type!r}")
         if not self.source or not self.target:
             raise SpecError("mount requires source and target")
-        if self.type == "bind" and _is_forbidden_bind(self.source):
+        if self.type == "bind" and is_forbidden_host_path(self.source):
             raise SpecError(
                 f"bind mount source {self.source!r} is forbidden (host-sensitive "
                 f"path — would allow host escape); mount a specific project path")
