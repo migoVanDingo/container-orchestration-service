@@ -57,6 +57,24 @@ def test_bad_network_rejected():
         WorkloadSpec.from_dict({"image": "alpine", "network": "bad name!"})
 
 
+def test_forbidden_bind_mounts_rejected():
+    # host-sensitive bind sources = host escape → must raise
+    for src in ("/var/run/docker.sock", "/", "/proc", "/sys/kernel", "/etc/passwd",
+                "/var/run/../run/docker.sock"):
+        with pytest.raises(SpecError):
+            WorkloadSpec.from_dict({
+                "image": "alpine",
+                "mounts": [{"source": src, "target": "/x"}]})
+
+
+def test_ordinary_bind_and_volume_mounts_allowed():
+    # a project path and a named volume are fine
+    WorkloadSpec.from_dict({"image": "alpine",
+                            "mounts": [{"source": "/tmp/cos-proj", "target": "/app"}]})
+    WorkloadSpec.from_dict({"image": "alpine",
+                            "mounts": [{"source": "myvol", "target": "/data", "type": "volume"}]})
+
+
 def test_user_defined_network_accepted():
     s = WorkloadSpec.from_dict({"image": "alpine", "network": "cos-mynet"})
     assert s.network == "cos-mynet"

@@ -14,9 +14,36 @@ Designed against `agent-runtime/v2/_design/0024-container-orchestration-and-job-
 ## Why
 
 Some capabilities can't (or shouldn't) run in a host process — heavy engines
-with hostile installs, or untrusted binaries that need a sandbox. The answer is
-"the environment is a dependency": ship a recipe (an image), and dispatch a job
-into a container. This service is the thing that runs those containers.
+with hostile installs. The answer is "the environment is a dependency": ship a
+recipe (an image), and dispatch a job into a container. This service is the
+thing that runs those containers.
+
+## ⚠️ Security / trust model — read before exposing this
+
+cos drives the **Docker daemon, which is root-equivalent on a standard install**.
+Treat it accordingly.
+
+**Hardened (2026-07):**
+- **Bind-mount sources are validated** — `/var/run/docker.sock`, `/`, `/proc`,
+  `/sys`, `/dev`, `/etc`, `/var/run` (and symlink/`..` tricks) are rejected, so
+  the mount-the-socket host-escape is closed.
+- **Every container gets `pids_limit`, `no-new-privileges`, and default
+  cpu/mem caps** (a spec's own limits override) — fork-bomb / OOM / setuid-
+  escalation are shut off without breaking stock images.
+- `network=none` default, loopback-only port publishing, `host`/`container:*`
+  network modes rejected, correctly-quoted command/stdin (no shell injection).
+
+**Still open — know these:**
+- **The MCP server is unauthenticated.** Anything that can reach
+  `127.0.0.1:8770` — any local process, and (absent an Origin/Host check) a
+  malicious web page via DNS-rebinding — can drive Docker. **Never bind it to
+  anything but loopback, and never expose the port.** It is a control plane for
+  a **single trusted local user**, not a multi-tenant service.
+- **Not yet a full sandbox for untrusted code.** `cap_drop=ALL` + read-only
+  rootfs + a workspace mount *allowlist* remain a future opt-in `hardened`
+  profile. The catastrophic vectors are closed; for genuinely untrusted binaries
+  wait for that profile. Full analysis + mitigation log:
+  `_code_review/02-security-audit.md` and `_mitigation/` in the agent-runtime repo.
 
 ## Concepts
 

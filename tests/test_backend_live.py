@@ -95,9 +95,19 @@ def test_persistent_published_port_is_reachable(backend):
     )
     backend.ensure_env(spec)
     try:
-        time.sleep(1.0)  # let the server bind
-        with urllib.request.urlopen("http://127.0.0.1:50506/", timeout=5) as r:
-            assert r.status == 200
+        # Poll for the bind rather than a single fixed sleep — under full-suite
+        # daemon load the server can take >1s to come up (flaky otherwise).
+        last = None
+        for _ in range(20):
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:50506/", timeout=3) as r:
+                    assert r.status == 200
+                    break
+            except Exception as exc:  # noqa: BLE001 — not up yet
+                last = exc
+                time.sleep(0.5)
+        else:
+            raise AssertionError(f"server never became reachable: {last}")
     finally:
         backend.rm(name)
 
@@ -183,7 +193,6 @@ def test_build_image_once_run_many(backend):
 
 def test_gc_reclaims_stopped_network_and_unused_image(backend):
     net = "cos-test-gc-net"
-    img = "cos-test-gc-img:latest"
     stopped, running = "cos-test-gc-stopped", "cos-test-gc-running"
     for n in (stopped, running):
         try:
@@ -191,7 +200,11 @@ def test_gc_reclaims_stopped_network_and_unused_image(backend):
         except Exception:  # noqa: BLE001
             pass
     backend.ensure_network(net)                       # empty managed network
-    backend.build_image(img, dockerfile_inline="FROM alpine:3.19\n")  # unused managed image
+    # A base+provision job leaves an unused cos-gen CACHE image (gc reclaims the
+    # cache, unlike named image_build images which it preserves).
+    backend.run_job(WorkloadSpec(
+        env=EnvSpec(base="alpine:3.19", provision=("echo gctest > /m",)),
+        command=("true",)))
     backend.ensure_env(WorkloadSpec(env=EnvSpec(image="alpine:3.19"),
                        command=("sleep", "120"), lifecycle="persistent", name=stopped))
     backend.stop(stopped)                             # stopped managed container
@@ -201,7 +214,7 @@ def test_gc_reclaims_stopped_network_and_unused_image(backend):
         r = backend.gc()
         assert f"cos-{stopped}" in r["containers"]     # prune returns docker names
         assert net in r["networks"]
-        assert any(img in x for x in r["images"])
+        assert any(t.startswith("cos-gen:") for t in r["images"])  # cache reclaimed
         # the RUNNING container must survive gc (list() returns logical names)
         assert running in [c.name for c in backend.list()]
     finally:
@@ -210,10 +223,51 @@ def test_gc_reclaims_stopped_network_and_unused_image(backend):
                 backend.rm(n)
             except Exception:  # noqa: BLE001
                 pass
-        try:
-            backend.remove_image(img, force=True)
-        except Exception:  # noqa: BLE001
-            pass
+
+
+def test_default_hardening_applied(backend):
+    """Every container gets pids_limit + no-new-privileges + a mem cap."""
+    name = "cos-test-harden"
+    try:
+        backend.rm(name)
+    except Exception:  # noqa: BLE001
+        pass
+    backend.ensure_env(WorkloadSpec(env=EnvSpec(image="alpine:3.19"),
+                       command=("sleep", "60"), lifecycle="persistent", name=name))
+    try:
+        c = backend._find(name)
+        c.reload()
+        hc = c.attrs["HostConfig"]
+        assert hc["PidsLimit"] == 512
+        assert hc["Memory"] > 0                       # default cap, not unlimited
+        assert "no-new-privileges" in (hc.get("SecurityOpt") or [])
+    finally:
+        backend.rm(name)
+
+
+def test_gc_preserves_named_build_image(backend):
+    """gc reclaims the cache but NEVER a named image_build artifact."""
+    tag = "cos-test-keep:latest"
+    try:
+        backend.remove_image(tag, force=True)
+    except Exception:  # noqa: BLE001
+        pass
+    backend.build_image(tag, dockerfile_inline="FROM alpine:3.19\n")
+    try:
+        backend.gc()
+        assert any(tag in i["tags"] for i in backend.list_images())  # survived gc
+    finally:
+        backend.remove_image(tag, force=True)
+
+
+def test_find_ignores_unmanaged_lookalike(backend):
+    """exec/stop/rm must not act on a container that only carries cos.name."""
+    c = backend.client.containers.run(
+        "alpine:3.19", ["sleep", "60"], detach=True, labels={"cos.name": "ghost-xyz"})
+    try:
+        assert backend._find("ghost-xyz") is None
+    finally:
+        c.remove(force=True)
 
 
 def test_persistent_lifecycle(backend):

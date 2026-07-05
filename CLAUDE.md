@@ -45,6 +45,25 @@ tests/
   the refs first). Never removes running containers. Internal builds
   (`cos-gen:*`, `cos-build:*`) are now labeled managed so they're reclaimable.
 
+## Security posture (know this before extending)
+
+cos drives the root-equivalent Docker daemon. A 2026-07 audit
+(`agent-runtime/_code_review/02-security-audit.md`) found it is a control plane
+for a **single trusted local user**. Most gaps are now fixed (see
+`agent-runtime/_mitigation/` 01, 02, 04, 05):
+- ✅ **Bind-mount sources validated** (`spec.py` `_is_forbidden_bind`) — docker.sock,
+  `/`, `/proc`, `/sys`, `/dev`, `/etc`, `/var/run` + symlink/`..` tricks rejected.
+- ✅ **`_create_kwargs` sets `pids_limit=512`, `no-new-privileges`, default
+  cpu/mem caps** (spec limits override). Fork-bomb / OOM / setuid closed.
+- ✅ **`gc` preserves named `image_build` images** (only the cos-gen/cos-build
+  cache is pruned); `_find`/`_require` now require `cos.managed`.
+Still open (documented, not hidden):
+- MCP server is **unauthenticated** (no token, no Origin/Host check) → any local
+  process / DNS-rebind page can drive Docker. Loopback-only; never expose it.
+- `cap_drop=ALL` / read-only rootfs / workspace mount-allowlist = future opt-in
+  `hardened` profile (they break stock images). When you build it, update both
+  the README Security section and this note.
+
 ## Non-obvious decisions
 
 - **State is container labels, not a DB.** `docker ps --filter

@@ -23,6 +23,14 @@ from cos.core.spec import EnvSpec, WorkloadSpec, is_user_network
 
 _STDIN_PATH = "/tmp/cos_stdin"
 
+# Non-breaking safety defaults applied to every container. These kill the
+# fork-bomb / OOM / setuid-escalation vectors without dropping capabilities
+# (which breaks stock images — cap-drop + read-only rootfs stay a future
+# opt-in `hardened` profile). A spec's own limits override the resource caps.
+_DEFAULT_PIDS_LIMIT = 512
+_DEFAULT_MEM_LIMIT = "2g"      # generous; raise per-workload via spec.limits.memory
+_DEFAULT_CPUS = 2.0           # raise per-workload via spec.limits.cpus
+
 
 @dataclass
 class JobResult:
@@ -361,8 +369,13 @@ class DockerBackend:
         return removed
 
     def prune_images(self, only_unused: bool = True) -> list[str]:
-        """Remove managed images (and our cos-gen/cos-build cache tags) not
-        backing any container."""
+        """Remove the managed image CACHE (cos-gen/cos-build) not backing any
+        container.
+
+        Named `image_build` images (they carry a cos.name label) are the
+        build-once-run-many artifacts and are NEVER pruned here — reclaim those
+        deliberately via `remove_image`. gc only reclaims the disposable cache.
+        """
         in_use = set()
         if only_unused:
             for c in self.client.containers.list(all=True):
@@ -371,6 +384,8 @@ class DockerBackend:
                     in_use.add(iid)
         candidates: dict[str, Any] = {}
         for img in self.client.images.list(filters={"label": f"{L.MANAGED}=true"}):
+            if (img.labels or {}).get(L.NAME):
+                continue  # intentional build-once image — not cache; skip
             candidates[img.id] = img
         # backward-compat: our synthetic cache tags, even if built unlabeled.
         for img in self.client.images.list():
@@ -422,22 +437,28 @@ class DockerBackend:
             "network_mode": spec.network,
             "labels": lbls,
             "detach": True,
+            # Always-on, non-breaking hardening.
+            "pids_limit": _DEFAULT_PIDS_LIMIT,          # kills fork bombs
+            "security_opt": ["no-new-privileges"],      # kills setuid escalation
         }
         if spec.ports:
             # Publish to loopback only (sandbox-first): host 127.0.0.1:<host> -> container.
             kwargs["ports"] = {
                 f"{p.container}/{p.protocol}": ("127.0.0.1", p.host) for p in spec.ports
             }
-        if spec.limits.memory:
-            kwargs["mem_limit"] = spec.limits.memory
-        if spec.limits.cpus:
-            kwargs["nano_cpus"] = int(spec.limits.cpus * 1_000_000_000)
+        # Resource caps: spec value wins; otherwise a default (never unlimited).
+        kwargs["mem_limit"] = spec.limits.memory or _DEFAULT_MEM_LIMIT
+        cpus = spec.limits.cpus or _DEFAULT_CPUS
+        kwargs["nano_cpus"] = int(cpus * 1_000_000_000)
         if spec.lifecycle == "persistent" and spec.name:
             kwargs["name"] = f"cos-{spec.name}"
         return {k: v for k, v in kwargs.items() if v is not None}
 
     def _find(self, name: str) -> Any:
-        conts = self.client.containers.list(all=True, filters={"label": f"{L.NAME}={name}"})
+        # Scope to managed: exec/logs/stop/rm must never act on a look-alike
+        # container that merely carries a matching cos.name label.
+        conts = self.client.containers.list(
+            all=True, filters={"label": [f"{L.MANAGED}=true", f"{L.NAME}={name}"]})
         return conts[0] if conts else None
 
     def _require(self, name: str) -> Any:

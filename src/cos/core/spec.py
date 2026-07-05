@@ -9,10 +9,36 @@ Exactly one of {image, build, base} is set.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 
 from cos.core.errors import SpecError
+
+# Host paths a bind mount must never expose — mounting any of these lets a
+# "sandboxed" container own the host (docker.sock → daemon control; / → host FS;
+# /proc,/sys,/dev → kernel/device access; /etc → host credentials). Checked
+# against the realpath so `..` and symlink tricks can't slip past.
+_FORBIDDEN_BIND_PREFIXES = ("/proc", "/sys", "/dev", "/boot", "/etc", "/var/run", "/run")
+# Include each prefix AND its realpath so macOS symlinks (/etc → /private/etc,
+# /var → /private/var) can't sidestep the check from either direction.
+_FORBIDDEN_BIND_SET = frozenset(
+    {p for p in _FORBIDDEN_BIND_PREFIXES} | {os.path.realpath(p) for p in _FORBIDDEN_BIND_PREFIXES})
+
+
+def _is_forbidden_bind(source: str) -> bool:
+    # Check both the lexically-normalized path (catches literal /etc/... even
+    # where /etc is a symlink) and the fully-resolved path (catches `..` and
+    # symlink tricks pointing INTO a sensitive dir).
+    for path in (os.path.normpath(source), os.path.realpath(source)):
+        if path == "/":
+            return True
+        if path.endswith("/docker.sock") or os.path.basename(path) == "docker.sock":
+            return True
+        if any(path == p or path.startswith(p + "/") for p in _FORBIDDEN_BIND_SET):
+            return True
+    return False
+
 
 # Network modes we allow directly. Any other value is treated as a user-defined
 # network name — containers sharing one resolve each other by container name (DNS).
@@ -40,6 +66,10 @@ class Mount:
             raise SpecError(f"mount.type must be bind|volume, got {self.type!r}")
         if not self.source or not self.target:
             raise SpecError("mount requires source and target")
+        if self.type == "bind" and _is_forbidden_bind(self.source):
+            raise SpecError(
+                f"bind mount source {self.source!r} is forbidden (host-sensitive "
+                f"path — would allow host escape); mount a specific project path")
 
 
 @dataclass(frozen=True)
